@@ -1654,22 +1654,56 @@ function initialize(mainWindow, context) {
       * @param {Array} history - 话题历史消息
       * @returns {number} - 未读消息数，-1 表示仅显示小点
       */
-     function calculateTopicUnreadCount(topic, history) {
-         const count = countUnreadMessages(history);
+     function calculateTopicUnreadCount(topic, summary) {
+         const count = summary.count;
          if (count > 0) return count;
  
          // 明确的手动未读始终保留；Agent/TopicSponsor 旧标记在用户参与后失效。
          if (
              topic.unread === true &&
-             (topic.unreadSource === 'manual' || !hasUserParticipation(history))
+             (topic.unreadSource === 'manual' || !summary.hasUser)
          ) {
              return -1; // 仅显示小点，不显示数字
          }
  
          return 0; // 不显示
      }
-    ipcMain.handle('get-unread-topic-counts', async () => {
+    // 统计结果只取决于历史本身，按修改时间和大小缓存：历史没变就不再读取、解析。
+    // 话题上的未读标记不缓存，它们不写历史也会变。
+    const unreadHistoryCache = new Map();
+    async function readUnreadSummary(historyPath) {
+        const stat = await fs.stat(historyPath);
+        const cached = unreadHistoryCache.get(historyPath);
+        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached;
+        const history = await fs.readJson(historyPath);
+        const summary = {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            count: countUnreadMessages(history),
+            hasUser: hasUserParticipation(history),
+        };
+        unreadHistoryCache.set(historyPath, summary);
+        return summary;
+    }
+
+    // 启动时渲染端会连着请求两次。正在统计时来的请求等这一轮结束，再一起跑一轮，拿到这期间的变化。
+    let unreadPass = null;
+    let nextUnreadPass = null;
+    function sharedUnreadPass() {
+        if (!unreadPass) {
+            unreadPass = countUnreadTopics().finally(() => { unreadPass = null; });
+            return unreadPass;
+        }
+        return nextUnreadPass ??= unreadPass.then(() => {
+            nextUnreadPass = null;
+            return sharedUnreadPass();
+        });
+    }
+    ipcMain.handle('get-unread-topic-counts', sharedUnreadPass);
+
+    async function countUnreadTopics() {
         const counts = {};
+        const visited = new Set();
         try {
             const agentDirs = await fs.readdir(AGENT_DIR, { withFileTypes: true });
             for (const dirent of agentDirs) {
@@ -1685,9 +1719,9 @@ function initialize(mainWindow, context) {
                             for (const topic of config.topics) {
                                 const historyPath = path.join(USER_DATA_DIR, agentId, 'topics', topic.id, 'history.json');
                                 if (await fs.pathExists(historyPath)) {
+                                    visited.add(historyPath);
                                     try {
-                                        const history = await fs.readJson(historyPath);
-                                        const topicCount = calculateTopicUnreadCount(topic, history);
+                                        const topicCount = calculateTopicUnreadCount(topic, await readUnreadSummary(historyPath));
                                         if (topicCount > 0) {
                                             totalCount += topicCount;
                                         } else if (topicCount === -1) {
@@ -1695,6 +1729,7 @@ function initialize(mainWindow, context) {
                                             hasUnreadMarker = true;
                                         }
                                     } catch (readJsonError) {
+                                        unreadHistoryCache.delete(historyPath);
                                         console.error(`读取 history.json 失败: ${historyPath}`, readJsonError);
                                     }
                                 }
@@ -1711,12 +1746,16 @@ function initialize(mainWindow, context) {
                     }
                 }
             }
+            // 删掉的话题和助手不留在缓存里。
+            for (const historyPath of unreadHistoryCache.keys()) {
+                if (!visited.has(historyPath)) unreadHistoryCache.delete(historyPath);
+            }
             return { success: true, counts };
         } catch (error) {
             console.error('获取未读话题计数时出错:', error);
             return { success: false, error: error.message, counts: {} };
         }
-    });
+    }
 
     // Part A: 切换话题锁定状态
     ipcMain.handle('toggle-topic-lock', async (event, agentId, topicId) => {
