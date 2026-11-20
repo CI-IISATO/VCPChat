@@ -38,7 +38,9 @@ function initializeInputEnhancer(refs) {
 
     void inputEnhancerDispose();
     const ownedDisposers = [];
-    const lifecycle = { active: true, tasks: new Set(), disposal: null };
+    const lifecycle = { active: true, tasks: new Set(), disposal: null, checkBatch: refs.checkAttachmentBatch };
+    const acceptsBatch = files => lifecycle.checkBatch?.(files) !== false;
+    const sameDraft = (agent, topic) => lifecycle.active && currentAgentIdRef() === agent && currentTopicIdRef() === topic;
     const isActive = () => lifecycle.active;
     const track = value => {
         const task = Promise.resolve(value);
@@ -127,8 +129,12 @@ function initializeInputEnhancer(refs) {
             return;
         }
 
-        const files = event.dataTransfer.files;
-        if (files && files.length > 0) {
+        await addFileBatch(Array.from(event.dataTransfer.files || []), agentId, topicId);
+    });
+
+    async function addFileBatch(files, agentId, topicId) {
+        if (!acceptsBatch(files)) return;
+        if (files.length > 0) {
             console.log(`[InputEnhancer] Dropped ${files.length} files.`);
             const filesToProcess = [];
 
@@ -203,7 +209,9 @@ function initializeInputEnhancer(refs) {
                 console.log('[InputEnhancer] Calling localElectronAPI.handleFileDrop with:', agentId, topicId, successfulFiles.map(f => ({ name: f.name, type: f.type, size: f.size, data: f.data ? `[Buffer, length: ${f.data.length}]` : 'N/A' })));
                 // Pass the actual buffers to main process
                 const results = await localElectronAPI.handleFileDrop(agentId, topicId, successfulFiles);
-                if (!isActive()) return;
+                if (!sameDraft(agentId, topicId)) return;
+                const stored = (results || []).filter(item => item.success && item.attachment).map(item => item.attachment);
+                if (!acceptsBatch(stored)) return;
                 console.log('[InputEnhancer] Results from handleFileDrop:', results);
                 if (results && results.length > 0) {
                     results.forEach(result => {
@@ -224,7 +232,7 @@ function initializeInputEnhancer(refs) {
         } else {
             console.log('[InputEnhancer] Drop event occurred but no files found in dataTransfer.');
         }
-    });
+    }
 
     // 2. Enhanced Paste functionality
     addListener(messageInput, 'paste', async (event) => {
@@ -253,20 +261,18 @@ function initializeInputEnhancer(refs) {
                 alert('请先选择一个 Agent 和话题，再粘贴文件。');
                 return;
             }
-            // 鐎电粯澹樼粭顑跨娑擃亝鏋冩禒璺鸿嫙婢跺嫮鎮?
-            for (let i = 0; i < items.length; i++) {
-                if (items[i].kind === 'file') {
-                    const file = items[i].getAsFile();
-                    if (file) {
-                        await handlePastedFileSafe(file, agentId, topicId, lifecycle, localElectronAPI);
-                        return; // 婢跺嫮鎮婄€瑰瞼顑囨稉鈧稉顏呮瀮娴犺泛姘ㄧ紒鎾存将
-                    }
-                }
+            const pasted = Array.from(items).filter(item => item.kind === 'file')
+                .map(item => item.getAsFile()).filter(Boolean);
+            if (pasted.length) {
+                await addFileBatch(pasted, agentId, topicId);
+                return;
             }
-            // 婵″倹鐏夐張澶嬪焻閸ユ拝绱濇稊鐔虹暬閺傚洣娆㈤敍灞肩瑐闂堛垻娈戦柅鏄忕帆娴兼艾顦╅悶?
             const imageData = await localElectronAPI.readImageFromClipboard();
             if (!isActive()) return;
             if (imageData && imageData.data) {
+                 const padding = imageData.data.endsWith('==') ? 2 : imageData.data.endsWith('=') ? 1 : 0;
+                 const size = Math.floor(imageData.data.length * 3 / 4) - padding;
+                 if (!sameDraft(agentId, topicId) || !acceptsBatch([{ size }])) return;
                  await handlePastedImageDataSafe(imageData, agentId, topicId, lifecycle, localElectronAPI);
                  return;
             }
@@ -281,6 +287,7 @@ function initializeInputEnhancer(refs) {
                 alert('请先选择一个 Agent 和话题，再粘贴长文本。');
                 return;
             }
+            if (!acceptsBatch([{ size: new Blob([pastedText]).size }])) return;
             await handleLongTextPasteSafe(pastedText, agentId, topicId, lifecycle, localElectronAPI);
             return;
         }
@@ -312,6 +319,7 @@ function initializeInputEnhancer(refs) {
             if (!isActive()) return;
             if (results && results.length > 0 && results[0].success && results[0].attachment) {
                 const att = results[0].attachment;
+                if (!sameDraft(agentId, topicId) || !acceptsBatch([att])) return;
                 attachedFilesRef.append({
                     file: { name: att.name, type: att.type, size: att.size },
                     localPath: att.internalPath,
@@ -828,6 +836,7 @@ function initializeInputEnhancer(refs) {
             if (!isActive()) return;
 
             if (results && results.length > 0 && results[0].success && results[0].attachment) {
+                if (!sameDraft(agentId, topicId) || !acceptsBatch([results[0].attachment])) return;
                 appendAttachment(results[0].attachment);
                 updateAttachmentPreviewRef();
                 console.log(`[InputEnhancer] Successfully attached ${suggestion.kind}: ${results[0].attachment.name}`);
@@ -955,7 +964,8 @@ async function handlePastedImageDataSafe(imageData, agentId, topicId, lifecycle,
             data: imageData.data,
             extension: imageData.extension || 'png'
         });
-        if (!lifecycle.active) return;
+        if (!lifecycle.active || currentAgentIdRef() !== agentId || currentTopicIdRef() !== topicId) return;
+        if (result?.attachment && lifecycle.checkBatch?.([result.attachment]) === false) return;
         if (result.success && result.attachment) {
             const att = result.attachment;
             attachedFilesRef.append({
@@ -978,7 +988,8 @@ async function handlePastedImageDataSafe(imageData, agentId, topicId, lifecycle,
 async function handleLongTextPasteSafe(pastedText, agentId, topicId, lifecycle, localElectronAPI) {
     try {
         const result = await localElectronAPI.handleTextPasteAsFile(agentId, topicId, pastedText);
-        if (!lifecycle.active) return;
+        if (!lifecycle.active || currentAgentIdRef() !== agentId || currentTopicIdRef() !== topicId) return;
+        if (result?.attachment && lifecycle.checkBatch?.([result.attachment]) === false) return;
         if (result.success && result.attachment) {
             const att = result.attachment;
             attachedFilesRef.append({

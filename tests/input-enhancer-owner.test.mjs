@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { createDomListenerOwner } from '../modules/renderer/domListenerOwner.js';
+import { attachmentIntakeWarning } from '../modules/chat/currentAttachmentBudget.mjs';
 
 const source = fs.readFileSync(new URL('../modules/inputEnhancer.js', import.meta.url), 'utf8');
 const deferred = () => Promise.withResolvers();
 
-function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
+function fixture(t, { listenerOwner, checkAttachmentBatch, handleFileDrop = async () => [] } = {}) {
     const dom = new JSDOM('<!doctype html><body><div id="composer"><textarea></textarea></div></body>', {
         runScripts: 'outside-only', url: 'http://localhost/',
     });
@@ -32,6 +33,7 @@ function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
         },
         attachedFiles: { append: attachment => attachments.push(attachment) },
         updateAttachmentPreview: () => { previews += 1; },
+        checkAttachmentBatch: incoming => checkAttachmentBatch?.(attachments, incoming),
         getCurrentAgentId: () => 'agent', getCurrentTopicId: () => 'topic', listenerOwner,
     };
     t.after(async () => {
@@ -42,6 +44,38 @@ function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
     const initialize = () => window.inputEnhancer.initializeInputEnhancer(refs);
     initialize();
     return { window, composer, subscriptions, attachments, initialize, get previews() { return previews; } };
+}
+
+for (const kind of ['drop', 'paste']) {
+    test(`${kind}: over-limit batch leaves the original draft alone without reading files`, async t => {
+        const warnings = [];
+        let read = 0, stored = 0;
+        const f = fixture(t, {
+            handleFileDrop: async () => { stored++; return []; },
+            checkAttachmentBatch: (existing, incoming) => {
+                const text = attachmentIntakeWarning(existing, incoming, 1);
+                if (text) warnings.push(text);
+                return !text;
+            },
+        });
+        f.window.FileReader = class { constructor() { read++; } };
+        f.attachments.push({ file: { size: 512 * 1024 } });
+        const input = f.composer.querySelector('textarea');
+        input.value = '原草稿';
+        const files = [1, 2].map(n => ({ name: `${n}.txt`, size: 384 * 1024, type: 'text/plain' }));
+        const event = new f.window.Event(kind, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, kind === 'drop' ? 'dataTransfer' : 'clipboardData', { value: {
+            files, items: files.map(file => ({ kind: 'file', getAsFile: () => file })),
+        } });
+        input.dispatchEvent(event);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(warnings.length, 1);
+        assert.match(warnings[0], /已有 0\.5 MiB.*本次 0\.75 MiB.*超过 1 MiB/);
+        assert.equal(read, 0);
+        assert.equal(stored, 0);
+        assert.equal(f.attachments.length, 1);
+        assert.equal(input.value, '原草稿');
+    });
 }
 
 test('renderer owner removes real DOM listeners and preload subscriptions', async t => {

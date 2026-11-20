@@ -17,6 +17,7 @@ import { createDomListenerOwner } from './modules/renderer/domListenerOwner.js';
 import { createMainChatThemeOwner } from './modules/renderer/mainChatThemeOwner.js';
 import { createMainChatSettingsPresentationOwner } from './modules/renderer/mainChatSettingsPresentationOwner.js';
 import { createMainChatAttachmentOwner } from './modules/renderer/mainChatAttachmentOwner.js';
+import { attachmentIntakeWarning } from './modules/chat/currentAttachmentBudget.mjs';
 import { createMainChatSendOwner } from './modules/renderer/mainChatSendOwner.js';
 import { createTopicAdmissionQueueView } from './modules/renderer/topicAdmissionQueueView.js';
 import { prepareTopicAdmissionSingleChat } from './modules/chat/topicAdmissionSingleChat.js';
@@ -654,6 +655,12 @@ mainChatSettingsPresentationOwner.configureStartup({
         window.inputEnhancer.initializeInputEnhancer({
             messageInput: messageInput,
             dropTargetElement: chatInputCard,
+            checkAttachmentBatch: incoming => {
+                const warning = attachmentIntakeWarning(mainChatAttachmentOwner.get(), incoming,
+                    mainChatSettingsOwner.ref.get()?.currentAttachmentBudgetMiB);
+                if (warning) uiHelperFunctions.showToastNotification(warning, 'warning');
+                return !warning;
+            },
             electronAPI: chatAPI,
             attachedFiles: mainChatAttachmentOwner.ref,
             updateAttachmentPreview: mainChatAttachmentOwner.syncPreview,
