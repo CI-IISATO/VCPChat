@@ -182,6 +182,54 @@ async function readAttachmentFrames(electronAPI, attachment, data) {
     }
 }
 
+function projectHistoricalFileImages(message) {
+    if (!Array.isArray(message?.attachments)) return { message, references: [] };
+    const references = [];
+    const attachments = message.attachments.filter(attachment => {
+        const data = getAttachmentData(attachment);
+        const frames = data.imageFrames || attachment?.imageFrames;
+        if (!getAttachmentType(attachment, data).startsWith('image/')
+            || isLiveReferenceAttachment(attachment, data)
+            || data.extractedText || attachment?.extractedText
+            || (Array.isArray(frames) && frames.length > 0)) return true;
+
+        const source = attachment?.src || attachment?.internalPath || data.internalPath;
+        if (typeof source !== 'string') return true;
+        // Stored paths include both standard file URLs and Electron's native Windows form.
+        if (!/^file:\/\/(?:\/?[a-z]:[/\\][^\r\n]+|\/[^/\r\n][^\r\n]*|\\\\[^\\\r\n]+\\[^\r\n]+|[^/\\\r\n]+\/[^/\r\n]+\/[^\r\n]+)$/i.test(source)) {
+            return true;
+        }
+        references.push(`\n\n[历史图片：本次未附图像数据，仅保留文件引用：${source}]`);
+        return false;
+    });
+    return { message: references.length ? { ...message, attachments } : message, references };
+}
+
+async function assertCurrentTurnMediaBudget({ message, electronAPI, settings }) {
+    const mib = settings?.singleChatMediaBudgetMiB;
+    if (!Number.isSafeInteger(mib) || mib <= 0 || !message) return;
+    const limit = mib * 1024 * 1024;
+    let bytes = 0;
+    // Count encoded media, not the original file size or the HTTP request body.
+    function addBytes(size) {
+        bytes += size;
+        if (bytes > limit) {
+            throw new Error(`本轮媒体超过 ${mib} MiB 的本地发送预算，请移除部分附件后重试。`);
+        }
+    }
+    const encoder = new TextEncoder();
+    for (const part of normalizeContentParts(message.content)) {
+        const url = part.type === 'image_url' ? part.image_url?.url : null;
+        if (typeof url === 'string' && url.startsWith('data:')) addBytes(encoder.encode(url).byteLength);
+    }
+    for (const attachment of message.attachments || []) {
+        const payload = await readAttachmentFrames(electronAPI, attachment, getAttachmentData(attachment));
+        if (!payload) continue;
+        const prefixBytes = encoder.encode(`data:${payload.type};base64,`).byteLength;
+        for (const frame of payload.frames) addBytes(prefixBytes + String(frame).length);
+    }
+}
+
 async function buildDefaultMessageContent({ message, electronAPI }) {
     const originalParts = normalizeContentParts(message?.content);
     let text = stripHiddenToolResults(originalParts.filter(part => part?.type === 'text').map(part => normalizeText(part.text)).join('\n'));
@@ -322,7 +370,7 @@ async function assembleRequestMessages({
     temporaryPrompt, conversationSnapshot,
     systemPromptAppend, systemPromptPrefix,
     transformMessageText = null, buildMessageContent = null,
-    postProcessMessageContent = null, tavernRules = null,
+    postProcessMessageContent = null, tavernRules = null, settings = null,
 } = {}) {
     requireDependency(electronAPI, 'electronAPI');
     if (!Array.isArray(history)) throw new TypeError('Single chat history must be an array');
@@ -345,19 +393,29 @@ async function assembleRequestMessages({
             : snapshot ? (Array.isArray(snapshot.rules) ? snapshot.rules : []) : await loadTavernRules(electronAPI);
         const contentBuilder = buildMessageContent || buildDefaultMessageContent;
         const effectiveHistory = effectiveContextHistory(history);
+        const currentIndex = settings?.omitHistoricalFileImages === true
+            ? effectiveHistory.findIndex(message => message.role === 'user'
+                && (message === currentUserMessage || (currentUserMessageId != null && message.id === currentUserMessageId)))
+            : -1;
         const messages = [];
 
         for (let index = 0; index < effectiveHistory.length; index += 1) {
             const historyMessage = effectiveHistory[index];
-            let content = isContextCheckpoint(historyMessage)
+            const checkpoint = isContextCheckpoint(historyMessage);
+            const projection = !checkpoint && index < currentIndex
+                ? projectHistoricalFileImages(historyMessage) : { message: historyMessage, references: [] };
+            let content = checkpoint
                 ? [{ type: 'text', text: normalizeText(historyMessage.content) }]
                 : await contentBuilder({
-                message: historyMessage,
+                message: projection.message,
                 index,
                 history: effectiveHistory,
                 electronAPI,
             });
             content = normalizeContentParts(content);
+            if (projection.references.length) {
+                content = updateFirstTextPart(content, text => text + projection.references.join(''));
+            }
 
             if (!isContextCheckpoint(historyMessage) && typeof transformMessageText === 'function') {
                 content = updateFirstTextPart(content, text => transformMessageText({
@@ -448,6 +506,7 @@ async function resolveRequestEmotionPrompt(api, agentId, agentConfig) {
 
 export {
     attachTimestampMetadata,
+    assertCurrentTurnMediaBudget,
     expandWorkspacePlaceholdersInPrompt,
     describeLiveReference,
     buildDefaultMessageContent,

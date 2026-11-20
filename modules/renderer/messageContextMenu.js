@@ -1,6 +1,6 @@
 // modules/renderer/messageContextMenu.js
 import { effectiveContextHistory, isContextCheckpoint } from '../chat/contextCompactionState.js';
-import { assembleRequestMessages } from '../chat/chatContextPipeline.js';
+import { assembleRequestMessages, assertCurrentTurnMediaBudget } from '../chat/chatContextPipeline.js';
 
 /** Creates one context-menu state owner for one MessageRenderer instance. */
 export function createMessageContextMenu() {
@@ -1033,6 +1033,17 @@ async function handleRegenerateResponseOwned(originalAssistantMessage, admission
     }
 
     const historyForRegeneration = effectiveContextHistory(currentChatHistoryArray.slice(0, originalMessageIndex));
+    const currentUserMessage = historyForRegeneration.findLast(msg => msg.role === 'user' && !isContextCheckpoint(msg));
+    if (currentUserMessage && globalSettingsVal?.singleChatMediaBudgetMiB > 0) {
+        try {
+            await assertCurrentTurnMediaBudget({ electronAPI, message: currentUserMessage, settings: globalSettingsVal });
+        } catch (error) {
+            uiHelper.showToastNotification(`重新回复未启动，历史已保留：${error.message}`, 'error');
+            return;
+        }
+        if (mainRefs.currentSelectedItemRef.get()?.id !== currentSelectedItemVal.id
+            || mainRefs.currentTopicIdRef.get() !== currentTopicIdVal) return;
+    }
     const regenerationBaseline = structuredClone(currentChatHistoryArray);
     const messagesToRemove = currentChatHistoryArray.slice(originalMessageIndex);
 
@@ -1325,7 +1336,8 @@ async function handleRegenerateResponseOwned(originalAssistantMessage, admission
         const { messagesForVCP } = await assembleRequestMessages({
             electronAPI, tavernEngine: ownerWindow.TavernRulesEngine, agentConfig,
             history: historyForRegeneration, context,
-            currentUserMessage: [...historyForRegeneration].reverse().find(msg => msg.role === 'user'),
+            currentUserMessage: currentUserMessage ?? historyForRegeneration.findLast(msg => msg.role === 'user'),
+            settings: globalSettingsVal,
             buildMessageContent: buildRegenerationContent,
         });
         const modelConfigForVCP = {

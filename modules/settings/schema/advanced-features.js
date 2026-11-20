@@ -70,6 +70,23 @@ export const advancedFeaturesSection = section('advanced-features', '高级功�
             }),
         ],
     }),
+    disclosure('singleChatMediaSettings', {
+        title: '媒体发送（仅单聊）',
+        open: false,
+        fields: [
+            switchField('omitHistoricalFileImages', {
+                label: '历史文件图片仅发送引用',
+                hint: '本轮仍发送图片数据；符合条件的旧图仅保留本地文件引用，不改动聊天记录或原文件。服务端不一定能访问本地路径。',
+            }),
+            number('singleChatMediaBudgetMiB', {
+                label: '本轮内联媒体预算（MiB）',
+                hint: '0 表示关闭。按编码后的媒体数据计量，超过时整轮不发；不包含历史、文本或其他请求开销，也不代表服务器限额。',
+                min: 0,
+                defaultValue: 0,
+                save: { parse: 'int', fallback: 0 },
+            }),
+        ],
+    }),
     switchField('enableDistributedServer', {
         label: '启用VCP分布式服务器',
         rowStyle: 33,

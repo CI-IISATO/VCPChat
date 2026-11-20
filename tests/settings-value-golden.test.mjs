@@ -197,7 +197,7 @@ global.CustomEvent = dom.window.CustomEvent;
 global.HTMLElement = dom.window.HTMLElement;
 const doc = dom.window.document;
 
-function renderAllSections() {
+function renderAllSections(doc = dom.window.document) {
     const form = doc.createElement('form');
     form.id = 'globalSettingsForm';
     for (const sectionDescriptor of schemaSurfaceSections()) {
@@ -318,7 +318,7 @@ function historicalPayload(payload) {
     delete profile.toolExpansion;
     delete profile.toolBubbleMotion;
     const historical = {...payload, appearanceProfile: profile};
-    for (const key of ['enableContextCompaction', 'contextCompactionModel', 'contextCompactionPrompt', 'contextCompactionSendPrompt', 'contextCompactionMainPrompt']) {
+    for (const key of ['enableContextCompaction', 'contextCompactionModel', 'contextCompactionPrompt', 'contextCompactionSendPrompt', 'contextCompactionMainPrompt', 'omitHistoricalFileImages', 'singleChatMediaBudgetMiB']) {
         delete historical[key];
     }
     return historical;
@@ -356,6 +356,19 @@ test('金测：未灌值的新渲染表单与旧收集器等价（schema 默认�
     const legacy = legacyCollect({ ...scope });
     const collected = collectSettings(schemaSurfaceSections(), { form, ...scope });
     assert.deepStrictEqual(historicalPayload(collected), legacy);
+});
+
+test('单聊媒体设置默认关闭，启用后保存布尔值与整数预算', () => {
+    const freshDoc = doc.implementation.createHTMLDocument();
+    const form = renderAllSections(freshDoc);
+    const scope = { ...makeScope(baseCurrentSettings()), doc: freshDoc };
+    const collect = () => collectSettings(schemaSurfaceSections(), { form, ...scope });
+    assert.equal(collect().omitHistoricalFileImages, false);
+    assert.equal(collect().singleChatMediaBudgetMiB, 0);
+    form.querySelector('#omitHistoricalFileImages').checked = true;
+    form.querySelector('#singleChatMediaBudgetMiB').value = '16';
+    assert.equal(collect().omitHistoricalFileImages, true);
+    assert.equal(collect().singleChatMediaBudgetMiB, 16);
 });
 
 test('值语义特例：parseInt||fallback 的 0 兜底、钳位顺序、白名单', () => {

@@ -4,6 +4,7 @@ import {
     createSingleChatRequestOrchestrator,
     updateFirstTextPart,
 } from './chat/singleChatRequestOrchestrator.js';
+import { assertCurrentTurnMediaBudget } from './chat/chatContextPipeline.js';
 import { publishConversationSelection } from './ui-system/sources/conversation-current.js';
 import { createContextCompactionService, shouldCompactContext, estimateContextTokens } from './chat/contextCompactionService.js';
 import { effectiveContextHistory, isContextCheckpoint, summarizeCompactionInput } from './chat/contextCompactionState.js';
@@ -1957,6 +1958,30 @@ export const chatManager = (() => {
         }
         pendingSendContexts.add(sendSignature);
         try {
+        const uiAttachments = attachedFiles.map(af => {
+            const fileManagerData = af._fileManagerData || {};
+            return {
+                type: fileManagerData.type || af.file.type,
+                src: af.localPath,
+                name: af.originalName,
+                size: af.file.size,
+                _fileManagerData: fileManagerData,
+            };
+        });
+        if (!request?.checkpointMessageId && uiAttachments.length && globalSettings.singleChatMediaBudgetMiB > 0) {
+            try {
+                await assertCurrentTurnMediaBudget({
+                    electronAPI, message: { content, attachments: uiAttachments }, settings: globalSettings,
+                });
+                if (!isSendContextCurrent() || request?.signal?.aborted) return;
+            } catch (error) {
+                if (isSendContextCurrent() && !request?.conversation) {
+                    uiHelper.showToastNotification(`发送失败，草稿已保留：${error.message}`, 'error');
+                }
+                if (request?.propagateError) throw error;
+                return;
+            }
+        }
         if (!request?.checkpointMessageId && globalSettings.enableContextCompaction === true
             && shouldCompactContext(sendHistoryRef.get(), currentSelectedItem.config || currentSelectedItem, content)) {
             try {
@@ -1976,20 +2001,6 @@ export const chatManager = (() => {
                 return;
             }
         }
-        const uiAttachments = [];
-        if (attachedFiles.length > 0) {
-            for (const af of attachedFiles) {
-                const fileManagerData = af._fileManagerData || {};
-                uiAttachments.push({
-                    type: fileManagerData.type || af.file.type,
-                    src: af.localPath,
-                    name: af.originalName,
-                    size: af.file.size,
-                    _fileManagerData: fileManagerData
-                });
-            }
-        }
-
         const existingCheckpoint = request?.checkpointMessageId
             ? sendHistoryRef.get().find(message => message.id === request.checkpointMessageId && isContextCheckpoint(message))
             : null;
