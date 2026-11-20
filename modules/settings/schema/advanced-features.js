@@ -71,12 +71,12 @@ export const advancedFeaturesSection = section('advanced-features', '高级功�
         ],
     }),
     disclosure('singleChatMediaSettings', {
-        title: '媒体发送（仅单聊）',
+        title: '媒体发送（单聊与群聊）',
         open: false,
         fields: [
             switchField('omitHistoricalFileImages', {
                 label: '历史文件图片仅发送引用',
-                hint: '本轮仍发送图片数据；符合条件的旧图仅保留本地文件引用，不改动聊天记录或原文件。服务端不一定能访问本地路径。',
+                hint: '默认关闭。开启后，本轮仍发送图片；有文件引用的普通旧图只带路径。若要模型再次看旧图，请重新附上。聊天记录和原文件不变。',
             }),
             number('singleChatMediaBudgetMiB', {
                 label: '本轮内联媒体预算（MiB）',

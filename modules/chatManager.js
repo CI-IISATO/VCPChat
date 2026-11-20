@@ -1926,23 +1926,11 @@ export const chatManager = (() => {
                 if (request.propagateError) throw error;
                 return;
             }
-            if (groupRenderer && typeof groupRenderer.handleSendGroupMessage === 'function') {
-                groupRenderer.handleSendGroupMessage(
-                    currentSelectedItem.id,
-                    currentTopicId,
-                    { text: content, attachments: attachedFiles.map(af => ({ type: af.file.type, src: af.localPath, name: af.originalName, size: af.file.size })) },
-                    globalSettings.userName || '用户'
-                );
-            } else {
-                uiHelper.showToastNotification("群聊功能模块未加载，无法发送消息。", 'error');
+            if (typeof groupRenderer?.handleSendGroupMessage === 'function') {
+                // 群聊发送入口只在消息入队成功后清空它捕获的那份草稿。
+                return groupRenderer.handleSendGroupMessage();
             }
-            if (!request) {
-                messageInput.value = '';
-                attachedFilesRef.set([]);
-                if(mainRendererFunctions.updateAttachmentPreview) mainRendererFunctions.updateAttachmentPreview();
-                uiHelper.autoResizeTextarea(messageInput);
-            }
-            // messageInput.focus();
+            uiHelper.showToastNotification('群聊功能模块未加载，无法发送消息。', 'error');
             return;
         }
 

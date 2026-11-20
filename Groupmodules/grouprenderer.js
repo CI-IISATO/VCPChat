@@ -1489,6 +1489,12 @@ window.GroupRenderer = (() => {
             if (typeof electronAPI.topicAdmissionSubmit !== 'function') {
                 throw new Error('中央消息入场服务不可用，草稿已保留');
             }
+            if (currentGlobalSettings.singleChatMediaBudgetMiB > 0 && uiAttachments.length) {
+                const { checkGroupMediaBudget } = await import('../modules/chat/fileImageProjection.mjs');
+                checkGroupMediaBudget(uiAttachments, currentGlobalSettings.singleChatMediaBudgetMiB);
+                if (currentSelectedItemRef.get()?.id !== currentSelected.id || currentTopicIdRef.get() !== currentTopic
+                    || mainRendererElements.messageInput.value !== rawDraft || mainRendererFunctions.getAttachedFiles() !== attachedFiles) return;
+            }
             const result = await electronAPI.topicAdmissionSubmit({
                 scope: { itemType: 'group', itemId: currentSelected.id, topicId: currentTopic },
                 message: {

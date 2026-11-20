@@ -6,6 +6,7 @@ const { JSDOM } = require('jsdom');
 let compactionDependencies;
 test.before(async () => {
     compactionDependencies = {
+        assertCurrentTurnMediaBudget: (await import('../modules/chat/chatContextPipeline.js')).assertCurrentTurnMediaBudget,
         ...await import('../modules/chat/contextCompactionService.js'),
         ...await import('../modules/chat/contextCompactionState.js'),
         ...await import('../modules/chat/chatHistoryMutationAuthority.js'),
@@ -45,6 +46,7 @@ function createFixture(options = {}) {
     Object.assign(window, compactionDependencies);
     if (options.compactionService) window.createContextCompactionService = () => options.compactionService;
     const chatManagerSource = fs.readFileSync('modules/chatManager.js', 'utf8')
+        .replace(/^import \{ assertCurrentTurnMediaBudget \} from '\.\/chat\/chatContextPipeline\.js';$/m, '')
         .replace(/import\s*\{[^}]*\}\s*from\s*['"]\.\/chat\/contextCompaction(?:Service|State)\.js['"];\s*/g, '')
         .replace(/import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/chat\/singleChatRequestOrchestrator\.js['"];\s*/, '')
         .replace(/import\s*\{\s*publishConversationSelection\s*\}\s*from\s*['"][^'"]+['"];\s*/, '')

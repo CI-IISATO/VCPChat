@@ -182,28 +182,7 @@ async function readAttachmentFrames(electronAPI, attachment, data) {
     }
 }
 
-function projectHistoricalFileImages(message) {
-    if (!Array.isArray(message?.attachments)) return { message, references: [] };
-    const references = [];
-    const attachments = message.attachments.filter(attachment => {
-        const data = getAttachmentData(attachment);
-        const frames = data.imageFrames || attachment?.imageFrames;
-        if (!getAttachmentType(attachment, data).startsWith('image/')
-            || isLiveReferenceAttachment(attachment, data)
-            || data.extractedText || attachment?.extractedText
-            || (Array.isArray(frames) && frames.length > 0)) return true;
-
-        const source = attachment?.src || attachment?.internalPath || data.internalPath;
-        if (typeof source !== 'string') return true;
-        // Stored paths include both standard file URLs and Electron's native Windows form.
-        if (!/^file:\/\/(?:\/?[a-z]:[/\\][^\r\n]+|\/[^/\r\n][^\r\n]*|\\\\[^\\\r\n]+\\[^\r\n]+|[^/\\\r\n]+\/[^/\r\n]+\/[^\r\n]+)$/i.test(source)) {
-            return true;
-        }
-        references.push(`\n\n[历史图片：本次未附图像数据，仅保留文件引用：${source}]`);
-        return false;
-    });
-    return { message: references.length ? { ...message, attachments } : message, references };
-}
+import { projectHistoricalFileImages } from './fileImageProjection.mjs';
 
 async function assertCurrentTurnMediaBudget({ message, electronAPI, settings }) {
     const mib = settings?.singleChatMediaBudgetMiB;

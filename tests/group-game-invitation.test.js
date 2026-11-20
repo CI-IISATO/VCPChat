@@ -8,7 +8,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-async function fixture(t, mode, stream) {
+async function fixture(t, mode, stream, mediaSettings = {}) {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'vgame-invite-'));
     t.after(() => fsp.rm(root, { recursive: true, force: true }));
     const filename = path.resolve(__dirname, '../Groupmodules/groupchat.js');
@@ -36,6 +36,9 @@ async function fixture(t, mode, stream) {
         },
         require: name => {
             if (name === 'electron') return { ipcMain: {} };
+            if (name === '../modules/fileManager') return {
+                getFileAsBase64: async () => ({ success: true, base64Frames: ['aQ=='] }),
+            };
             if (name === '../modules/modelTrajectory') return {
                 beginTrajectoryCall: details => {
                     trajectories.push(details);
@@ -57,7 +60,9 @@ async function fixture(t, mode, stream) {
             return localRequire(name);
         },
     };
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), sandbox, { filename });
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), sandbox, {
+        filename, importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+    });
     const api = module.exports;
     localRequire('../modules/services/conversationContext').initialize({
         load: owner => {
@@ -70,7 +75,7 @@ async function fixture(t, mode, stream) {
     });
     const settingsFile = path.join(root, 'settings.json');
     await fsp.writeFile(settingsFile, JSON.stringify({
-        vcpServerUrl: 'http://localhost:1234/v1/chat/completions', vcpApiKey: 'test',
+        vcpServerUrl: 'http://localhost:1234/v1/chat/completions', vcpApiKey: 'test', ...mediaSettings,
     }));
     api.initializePaths({
         APP_DATA_ROOT_IN_PROJECT: root, USER_DATA_DIR: path.join(root, 'users'),
@@ -79,7 +84,7 @@ async function fixture(t, mode, stream) {
     const created = await api.createAgentGroup('table', {
         mode, members: ['a'], groupPrompt: 'GAME_RULES_WITHOUT_WATCHER',
         modeSettings: { game: { gameTypeId: 'doudizhu' } },
-        enableContextMessageWindow: true, contextMessageWindowSize: 1,
+        enableContextMessageWindow: true, contextMessageWindowSize: Object.keys(mediaSettings).length ? 100 : 1,
     });
     assert.equal(created.success, true);
     const groupId = created.agentGroup.id, topicId = created.agentGroup.topics[0].id;
@@ -113,6 +118,36 @@ for (const stream of [false, true]) {
         assert.equal(f.trajectories.length, 0);
     });
 }
+for (const protect of [false, true]) {
+    test(`群聊媒体保护 ${protect}: 本轮 16 张始终完整，旧图按设置处理`, async t => {
+        const f = await fixture(t, 'invite_only', false, { omitHistoricalFileImages: protect });
+        for (const id of ['older', 'current']) {
+            await f.api.appendGroupHistoryMessage(f.groupId, f.topicId, {
+                role: 'user', id, content: id, attachments: Array.from({ length: 16 }, (_, i) => ({
+                    src: `file:///fixture/${id}-${i}.png`, type: 'image/png', size: 1,
+                })),
+            });
+        }
+        await f.invoke();
+        const turns = f.requests[0].messages.filter(m => Array.isArray(m.content));
+        const count = id => turns.find(m => m.content.some(p => p.text?.includes(id)))
+            .content.filter(p => p.type === 'image_url').length;
+        assert.equal(count('older'), protect ? 0 : 16);
+        assert.equal(count('current'), 16);
+        const history = await f.api.getGroupChatHistory(f.groupId, f.topicId);
+        assert.equal(history.find(m => m.id === 'older').attachments.length, 16);
+    });
+}
+
+test('群聊本轮超过预算不向模型发送请求', async t => {
+    const f = await fixture(t, 'invite_only', false, { singleChatMediaBudgetMiB: 1 });
+    await f.api.appendGroupHistoryMessage(f.groupId, f.topicId, {
+        role: 'user', id: 'large', content: '保留', attachments: [{ src:'file:///fixture/a.png',type:'image/png',size:1024*1024 }],
+    });
+    await assert.rejects(f.invoke(), /本地发送预算/);
+    assert.equal(f.requests.length, 0);
+});
+
 test('普通邀请仍保存回复及轨迹，不含watcher的groupPrompt正常注入', async t => {
     const f = await fixture(t, 'invite_only', false);
     await f.invoke();

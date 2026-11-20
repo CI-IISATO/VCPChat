@@ -534,6 +534,8 @@ async function getVcpGlobalSettings() {
                 vcpApiKey: settings.vcpApiKey,
                 userName: settings.userName || '用户',
                 topicSummaryModel: settings.topicSummaryModel,
+                omitHistoricalFileImages: settings.omitHistoricalFileImages === true,
+                singleChatMediaBudgetMiB: settings.singleChatMediaBudgetMiB,
                 // 添加净化器相关配置
                 enableContextSanitizer: settings.enableContextSanitizer === true,
                 contextSanitizerDepth: settings.contextSanitizerDepth,
@@ -1216,7 +1218,12 @@ async function handleGroupChatMessage(groupId, topicId, userMessage, sendStreamC
         // 2. 构建上下文结构 (每次循环都基于最新的 groupHistory)
         // 历史仍完整持久化；窗口仅限制本次发送给模型的最近楼层。
         const contextHistoryForAgent = selectGroupContextHistory(groupHistory, groupConfig);
-        const contextForAgentPromises = contextHistoryForAgent.map(async msg => {
+        const projection = globalVcpSettings.omitHistoricalFileImages
+            ? await import('../modules/chat/fileImageProjection.mjs') : null;
+        const sourceIndex = contextHistoryForAgent.findIndex(m => m.role === 'user' && m.id === userMessage.id);
+        const contextForAgentPromises = contextHistoryForAgent.map(async (original, index) => {
+            const { message: msg, references } = projection && index < sourceIndex
+                ? projection.projectHistoricalFileImages(original) : { message: original, references: [] };
             const speakerName = msg.name || (msg.role === 'user' ? userNameForMessage : (memberAgentConfigs[msg.agentId]?.name || 'AI'));
 
             let textForAIContext;
@@ -1296,6 +1303,7 @@ ${canvasData.errors || 'No errors'}
                 }
             }
 
+            textForAIContext += references.join('');
             const contentWithSpeakerTag = textForAIContext.startsWith(`[${speakerName}的发言]`)
                 ? textForAIContext : `[${speakerName}的发言]: ${textForAIContext}`;
             const vcpMessageContent = [{ type: 'text', text: contentWithSpeakerTag }];
@@ -2016,7 +2024,14 @@ async function handleInviteAgentToSpeakOwned(groupId, topicId, invitedAgentId, s
     // 历史仍完整持久化；窗口仅限制本次发送给模型的最近楼层。
     // JEV 的 Agent 发言也通过邀请路径执行，因此自动继承该窗口。
     const contextHistoryForAgent = selectGroupContextHistory(groupHistory, groupConfig);
-    const contextForAgentPromises = contextHistoryForAgent.map(async (msg, index, arr) => {
+    const media = globalVcpSettings.omitHistoricalFileImages || globalVcpSettings.singleChatMediaBudgetMiB > 0
+        ? await import('../modules/chat/fileImageProjection.mjs') : null;
+    const sourceIndex = options.mediaSourceId ? contextHistoryForAgent.findIndex(m => m.id === options.mediaSourceId)
+        : contextHistoryForAgent.findLastIndex(m => m.role === 'user');
+    media?.checkGroupMediaBudget(contextHistoryForAgent[sourceIndex]?.attachments, globalVcpSettings.singleChatMediaBudgetMiB);
+    const contextForAgentPromises = contextHistoryForAgent.map(async (original, index, arr) => {
+        const { message: msg, references } = globalVcpSettings.omitHistoricalFileImages && index < sourceIndex
+            ? media.projectHistoricalFileImages(original) : { message: original, references: [] };
         const speakerName = msg.name || (msg.role === 'user' ? (globalVcpSettings.userName || '用户') : (msg.agentName || 'AI')); // Use msg.agentName if available for AI
 
         let textForAIContext = (typeof msg.content === 'string') ? msg.content : (msg.content?.text || '');
@@ -2089,6 +2104,7 @@ ${canvasData.errors || 'No errors'}
             }
         }
 
+        textForAIContext += references.join('');
         const contentWithSpeakerTag = textForAIContext.startsWith(`[${speakerName}的发言]`)
                 ? textForAIContext : `[${speakerName}的发言]: ${textForAIContext}`;
         const vcpMessageContent = [{ type: 'text', text: contentWithSpeakerTag }];
@@ -2935,12 +2951,19 @@ async function redoGroupChatMessage(groupId, topicId, messageIdToDelete, agentId
             throw new Error('无法重新回复：受邀群成员不存在或配置无效。');
         }
         let removed = false;
+        let mediaSourceId;
+        const mediaSettings = await getVcpGlobalSettings();
+        const media = mediaSettings.singleChatMediaBudgetMiB > 0
+            ? await import('../modules/chat/fileImageProjection.mjs') : null;
         const removeTarget = history => {
             const target = history.find(message => message.id === messageIdToDelete);
             if (!target) return history;
             if (target.role !== 'assistant' || target.agentId !== agentIdToReInvite) {
                 throw new Error('只能重做指定群成员的 assistant 回复。');
             }
+            const source = history.slice(0, history.indexOf(target)).findLast(m => m.role === 'user');
+            mediaSourceId = source?.id;
+            media?.checkGroupMediaBudget(source?.attachments, mediaSettings.singleChatMediaBudgetMiB);
             removed = true;
             return history.filter(message => message.id !== messageIdToDelete);
         };
@@ -2964,6 +2987,7 @@ async function redoGroupChatMessage(groupId, topicId, messageIdToDelete, agentId
             getAgentConfigById, {
                 admissionQueueContext: queueContext,
                 admissionLifecycle: lifecycle,
+                mediaSourceId,
             });
     };
     if (!admission) return operation(null);
