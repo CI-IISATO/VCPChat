@@ -6,6 +6,14 @@
  */
 'use strict';
 
+import { attachmentIntakeWarning } from '../../chat/currentAttachmentBudget.mjs';
+
+function decodedBase64Size(data) {
+    // Electron returns raw, padded base64 (not a data URL).
+    const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+    return Math.floor(data.length * 3 / 4) - padding;
+}
+
 export function createSideChatAttachments({
     chatCapabilities,
     descriptor,
@@ -21,6 +29,13 @@ export function createSideChatAttachments({
     let disposed = false;
     const chatAPI = chatCapabilities?.electronAPI;
     const uiHelper = chatCapabilities?.uiHelper;
+
+    // UTTU: Check the whole batch without touching the existing draft.
+    function warnIfOverBudget(incoming) {
+        const warning = attachmentIntakeWarning(files, incoming, chatCapabilities?.getAttachmentBudgetMiB?.());
+        if (warning) uiHelper?.showToastNotification?.(warning, 'warning');
+        return Boolean(warning);
+    }
 
     function render() {
         if (disposed || !previewArea) return;
@@ -46,13 +61,16 @@ export function createSideChatAttachments({
         }
         let result;
         try {
-            result = await chatAPI.selectFilesToSend(descriptor.child.itemId, descriptor.child.topicId);
+            const draftSizes = files.map(att => ({ size: att.file.size }));
+            result = await chatAPI.selectFilesToSend(descriptor.child.itemId, descriptor.child.topicId, draftSizes);
         } catch (error) {
-            uiHelper?.showToastNotification?.(`选择文件时出错: ${error?.message || error}`, 'error');
+            if (!disposed) uiHelper?.showToastNotification?.(`选择文件时出错: ${error?.message || error}`, 'error');
             return;
         }
         if (disposed) return;
-        if (result?.success && Array.isArray(result.attachments) && result.attachments.length > 0) {
+        if (result?.warning) {
+            uiHelper?.showToastNotification?.(result.warning, 'warning');
+        } else if (result?.success && Array.isArray(result.attachments) && result.attachments.length > 0) {
             accept(result.attachments);
         } else if (result?.error) {
             uiHelper?.showToastNotification?.(`选择文件时出错: ${result.error}`, 'error');
@@ -60,6 +78,7 @@ export function createSideChatAttachments({
     }
 
     function accept(stored) {
+        if (warnIfOverBudget(stored.filter(att => att && !att.error))) return;
         const added = [];
         for (const att of stored) {
             if (!att || att.error) {
@@ -85,6 +104,7 @@ export function createSideChatAttachments({
             uiHelper?.showToastNotification?.('当前环境不支持添加附件', 'warning');
             return;
         }
+        if (warnIfOverBudget(list)) return;
         const { itemId, topicId } = descriptor.child;
         try {
             const payload = await Promise.all(list.map(async file => ({
@@ -93,9 +113,9 @@ export function createSideChatAttachments({
                 data: new Uint8Array(await file.arrayBuffer()),
                 size: file.size
             })));
-            if (disposed) return;
+            if (disposed || warnIfOverBudget(payload)) return;
             const results = await chatAPI.handleFileDrop(itemId, topicId, payload);
-            if (disposed) return;
+            if (disposed || warnIfOverBudget(payload)) return;
             accept((Array.isArray(results) ? results : []).map((result, i) => result?.success && result.attachment
                 ? result.attachment : { name: payload[i]?.name, error: result?.error || '未知错误' }));
         } catch (error) {
@@ -110,8 +130,10 @@ export function createSideChatAttachments({
         try {
             const image = await chatAPI.readImageFromClipboard();
             if (disposed || !image?.data) return;
+            const incoming = [{ size: decodedBase64Size(image.data) }];
+            if (warnIfOverBudget(incoming)) return;
             const result = await chatAPI.handleFilePaste(itemId, topicId, { type: 'base64', data: image.data, extension: image.extension || 'png' });
-            if (disposed) return;
+            if (disposed || warnIfOverBudget(incoming)) return;
             accept([result?.success && result.attachment ? result.attachment : { name: '截图', error: result?.error || '截图处理失败' }]);
         } catch (error) {
             if (!disposed) uiHelper?.showToastNotification?.(`粘贴截图时出错: ${error?.message || error}`, 'error');

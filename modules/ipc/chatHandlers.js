@@ -904,7 +904,7 @@ function initialize(mainWindow, context) {
         }
     });
 
-    ipcMain.handle('select-files-to-send', async (event, agentId, topicId) => {
+    ipcMain.handle('select-files-to-send', async (event, agentId, topicId, draftAttachmentSizes) => {
         if (!agentId || !topicId) {
             console.error('[Main - select-files-to-send] Agent ID or Topic ID not provided.');
             return { error: "Agent ID and Topic ID are required to select files." };
@@ -939,6 +939,29 @@ function initialize(mainWindow, context) {
         }
 
         if (!result.canceled && result.filePaths.length > 0) {
+            // UTTU: Check the whole selection before storage, live references or extraction.
+            let limitMiB;
+            try {
+                limitMiB = (await settingsManager?.readSettings?.())?.currentAttachmentBudgetMiB;
+            } catch (error) {
+                console.warn('[Main - select-files-to-send] Failed to read attachment budget:', error.message);
+            }
+            if (Number.isSafeInteger(limitMiB) && limitMiB > 0) {
+                const { attachmentIntakeWarning } = await import('../chat/currentAttachmentBudget.mjs');
+                const incoming = await Promise.all(result.filePaths.map(async filePath => {
+                    try {
+                        const stats = await fs.stat(filePath);
+                        return { size: stats.isFile() ? stats.size : undefined };
+                    } catch {
+                        return {};
+                    }
+                }));
+                const existing = draftAttachmentSizes == null ? []
+                    : Array.isArray(draftAttachmentSizes) ? draftAttachmentSizes : [{}];
+                const warning = attachmentIntakeWarning(existing, incoming, limitMiB);
+                if (warning) return { success: false, attachments: [], warning };
+            }
+
             try {
                 await rememberAttachmentDirectory(settingsManager, result.filePaths[0]);
             } catch (error) {

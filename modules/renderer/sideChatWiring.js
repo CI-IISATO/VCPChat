@@ -88,7 +88,7 @@ export function branchMetaToReopenArgs(meta) {
 
 export function createSideChatWiring({
     doc, win, chatAPI, chatRepository, chatManager, uiHelper, createRenderer,
-    selectedItemRef, topicIdRef, historyRef, getController
+    settingsRef, selectedItemRef, topicIdRef, historyRef, getController
 }) {
     const notify = (message, type) => uiHelper?.showToastNotification?.(message, type);
     const previousSelectionEntry = win.openSideChatWithSelection;
@@ -480,6 +480,7 @@ export function createSideChatWiring({
             manager: chatManager,
             uiHelper,
             electronAPI: chatAPI,
+            getAttachmentBudgetMiB: () => settingsRef?.get()?.currentAttachmentBudgetMiB,
             saveSideChatMetadata: (metadata) => saveSideChatMetadata({ electronAPI: chatAPI, metadata }),
             resolveAgentConfig: async (agentId) => {
                 const current = selectedItemRef.get();

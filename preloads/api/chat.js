@@ -65,7 +65,7 @@ module.exports = {
         handleFilePaste: invoke('handle-file-paste', 'agentId', 'topicId', 'fileData'),
         handleTextPasteAsFile: invoke('handle-text-paste-as-file', 'agentId', 'topicId', 'textContent'),
         handleFileDrop: invoke('handle-file-drop', 'agentId', 'topicId', 'droppedFilesData').roles('chat', 'desktop'),
-        selectFilesToSend: invoke('select-files-to-send', 'agentId', 'topicId'),
+        selectFilesToSend: invoke('select-files-to-send', 'agentId', 'topicId', 'draftAttachmentSizes'),
         onAddFileToInput: on('add-file-to-input'),
     },
 };

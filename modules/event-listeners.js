@@ -7,6 +7,7 @@ import { syncDependentRows } from './ui-system/settings/dependent-rows.js';
 import { assembleRequestMessages } from './chat/chatContextPipeline.js';
 import { shouldCompactContext } from './chat/contextCompactionService.js';
 import { installAppFeatures } from './renderer/appFeatures.js';
+import { attachmentIntakeWarning } from './chat/currentAttachmentBudget.mjs';
 
 let eventListenersBound = false;
 
@@ -465,7 +466,33 @@ export function setupEventListeners(deps) {
             uiHelperFunctions.showToastNotification("请先选择一个项目和话题以上传附件。", 'error');
             return;
         }
-        const result = await chatAPI.selectFilesToSend(currentSelectedItem.id, currentTopicId);
+        const stillCurrent = () => {
+            const item = refs.currentSelectedItem.get();
+            return item?.id === currentSelectedItem.id && item.type === currentSelectedItem.type
+                && refs.currentTopicId.get() === currentTopicId;
+        };
+        // UTTU: Only send metadata to the picker, never the existing file contents.
+        const draftSizes = refs.attachedFiles.get().map(att => ({
+            size: att?._fileManagerData?.size ?? att?.file?.size ?? att?.size
+        }));
+        let result;
+        try {
+            result = await chatAPI.selectFilesToSend(currentSelectedItem.id, currentTopicId, draftSizes);
+        } catch (error) {
+            if (stillCurrent()) uiHelperFunctions.showToastNotification(`选择文件时出错: ${error?.message || error}`, 'error');
+            return;
+        }
+        if (!stillCurrent()) return;
+
+        const warning = result?.warning || (result?.success && attachmentIntakeWarning(
+            refs.attachedFiles.get(),
+            result.attachments?.filter(att => !att.error),
+            refs.globalSettings.get()?.currentAttachmentBudgetMiB
+        ));
+        if (warning) {
+            uiHelperFunctions.showToastNotification(warning, 'warning');
+            return;
+        }
 
         if (result && result.success && result.attachments && result.attachments.length > 0) {
             result.attachments.forEach(att => {

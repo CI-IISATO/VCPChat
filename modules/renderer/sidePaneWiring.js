@@ -34,7 +34,10 @@ export function initWorkspaceSidePane({
     if (!root) return null;
 
 
-    const sideChat = createSideChatWiring({ doc, win, chatAPI, chatRepository, chatManager, uiHelper, createRenderer, selectedItemRef, topicIdRef, historyRef, getController: () => controller });
+    const sideChat = createSideChatWiring({
+        doc, win, chatAPI, chatRepository, chatManager, uiHelper, createRenderer,
+        settingsRef, selectedItemRef, topicIdRef, historyRef, getController: () => controller
+    });
     const controller = createSidePaneController({
         root,
         resizerHandle,
