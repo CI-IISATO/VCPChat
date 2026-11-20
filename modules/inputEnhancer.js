@@ -40,6 +40,17 @@ function initializeInputEnhancer(refs) {
     const ownedDisposers = [];
     const lifecycle = { active: true, tasks: new Set(), disposal: null };
     const isActive = () => lifecycle.active;
+    const queueIntake = (agentId, topicId, add) => {
+        const isCurrent = () => isActive() && refs.getCurrentAgentId() === agentId && refs.getCurrentTopicId() === topicId;
+        const run = remaining => isCurrent() && add(remaining, isCurrent);
+        return refs.attachedFiles.queueIntake?.(run) ?? run(Infinity);
+    };
+    const warnLimit = count => {
+        if (count > 0) {
+            const message = refs.attachedFiles.attachmentLimitNotice(count);
+            (refs.uiHelper?.showToastNotification ?? refs.showToastNotification)?.(message, 'warning');
+        }
+    };
     const track = value => {
         const task = Promise.resolve(value);
         lifecycle.tasks.add(task);
@@ -111,7 +122,7 @@ function initializeInputEnhancer(refs) {
         }
     });
 
-    addListener(dropTargetElement, 'drop', async (event) => {
+    addListener(dropTargetElement, 'drop', (event) => {
         event.preventDefault();
         event.stopPropagation();
         console.log('[InputEnhancer] drop event triggered.');
@@ -127,9 +138,12 @@ function initializeInputEnhancer(refs) {
             return;
         }
 
-        const files = event.dataTransfer.files;
-        if (files && files.length > 0) {
-            console.log(`[InputEnhancer] Dropped ${files.length} files.`);
+        const incoming = Array.from(event.dataTransfer.files || []);
+        if (incoming.length === 0) return;
+        return queueIntake(agentId, topicId, async (remaining, isCurrent) => {
+            const files = incoming.slice(0, remaining);
+            warnLimit(incoming.length - files.length);
+            if (files.length === 0) return;
             const filesToProcess = [];
 
             for (let i = 0; i < files.length; i++) {
@@ -183,7 +197,7 @@ function initializeInputEnhancer(refs) {
             }
 
             const droppedFilesData = await Promise.all(filesToProcess);
-            if (!isActive()) return;
+            if (!isCurrent()) return;
             const successfulFiles = droppedFilesData.filter(f => !f.error);
             const failedFiles = droppedFilesData.filter(f => f.error);
 
@@ -203,7 +217,7 @@ function initializeInputEnhancer(refs) {
                 console.log('[InputEnhancer] Calling localElectronAPI.handleFileDrop with:', agentId, topicId, successfulFiles.map(f => ({ name: f.name, type: f.type, size: f.size, data: f.data ? `[Buffer, length: ${f.data.length}]` : 'N/A' })));
                 // Pass the actual buffers to main process
                 const results = await localElectronAPI.handleFileDrop(agentId, topicId, successfulFiles);
-                if (!isActive()) return;
+                if (!isCurrent()) return;
                 console.log('[InputEnhancer] Results from handleFileDrop:', results);
                 if (results && results.length > 0) {
                     results.forEach(result => {
@@ -221,9 +235,7 @@ function initializeInputEnhancer(refs) {
                 console.error('[InputEnhancer] Error calling localElectronAPI.handleFileDrop IPC:', err);
                 alert('处理拖拽的文件时发生意外错误。');
             }
-        } else {
-            console.log('[InputEnhancer] Drop event occurred but no files found in dataTransfer.');
-        }
+        });
     });
 
     // 2. Enhanced Paste functionality
@@ -233,6 +245,7 @@ function initializeInputEnhancer(refs) {
         const clipboardData = event.clipboardData || window.clipboardData;
 
         if (!clipboardData) return;
+        const pastedText = clipboardData.getData('text/plain');
 
         // 1. 濡偓閺屻儲妲搁崥锔芥箒閺傚洣娆㈤幋鏍ф禈閻?
         const items = clipboardData.items;
@@ -253,36 +266,39 @@ function initializeInputEnhancer(refs) {
                 alert('请先选择一个 Agent 和话题，再粘贴文件。');
                 return;
             }
-            // 鐎电粯澹樼粭顑跨娑擃亝鏋冩禒璺鸿嫙婢跺嫮鎮?
-            for (let i = 0; i < items.length; i++) {
-                if (items[i].kind === 'file') {
-                    const file = items[i].getAsFile();
-                    if (file) {
-                        await handlePastedFileSafe(file, agentId, topicId, lifecycle, localElectronAPI);
-                        return; // 婢跺嫮鎮婄€瑰瞼顑囨稉鈧稉顏呮瀮娴犺泛姘ㄧ紒鎾存将
+            const files = Array.from(items).filter(item => item.kind === 'file')
+                .map(item => item.getAsFile()).filter(Boolean);
+            if (files.length > 0) {
+                return queueIntake(agentId, topicId, async (remaining, isCurrent) => {
+                    const accepted = files.slice(0, remaining);
+                    warnLimit(files.length - accepted.length);
+                    for (const file of accepted) {
+                        if (!isCurrent()) break;
+                        await handlePastedFileSafe(file, agentId, topicId, { get active() { return isCurrent(); } }, localElectronAPI);
                     }
-                }
+                });
             }
-            // 婵″倹鐏夐張澶嬪焻閸ユ拝绱濇稊鐔虹暬閺傚洣娆㈤敍灞肩瑐闂堛垻娈戦柅鏄忕帆娴兼艾顦╅悶?
-            const imageData = await localElectronAPI.readImageFromClipboard();
-            if (!isActive()) return;
-            if (imageData && imageData.data) {
-                 await handlePastedImageDataSafe(imageData, agentId, topicId, lifecycle, localElectronAPI);
-                 return;
-            }
-
+            return queueIntake(agentId, topicId, async (remaining, isCurrent) => {
+                const imageData = await localElectronAPI.readImageFromClipboard();
+                if (!isCurrent() || (!imageData?.data && !(pastedText?.length > LONG_TEXT_THRESHOLD))) return;
+                if (remaining === 0) return warnLimit(1);
+                const scope = { get active() { return isCurrent(); } };
+                if (imageData?.data) await handlePastedImageDataSafe(imageData, agentId, topicId, scope, localElectronAPI);
+                else await handleLongTextPasteSafe(pastedText, agentId, topicId, scope, localElectronAPI);
+            });
         }
 
         // 2. 婵″倹鐏夊▽鈩冩箒閺傚洣娆㈤敍灞绢梾閺屻儲妲搁崥锔芥Ц闂€鎸庢瀮閺?
-        const pastedText = clipboardData.getData('text/plain');
         if (pastedText && pastedText.length > LONG_TEXT_THRESHOLD) {
             event.preventDefault();
             if (!agentId || !topicId) {
                 alert('请先选择一个 Agent 和话题，再粘贴长文本。');
                 return;
             }
-            await handleLongTextPasteSafe(pastedText, agentId, topicId, lifecycle, localElectronAPI);
-            return;
+            return queueIntake(agentId, topicId, (remaining, isCurrent) => {
+                if (remaining === 0) return warnLimit(1);
+                return handleLongTextPasteSafe(pastedText, agentId, topicId, { get active() { return isCurrent(); } }, localElectronAPI);
+            });
         }
 
         // 3. 婵″倹鐏夐弮顫瑝閺勵垱鏋冩禒璁圭礉娑旂喍绗夐弰顖炴毐閺傚洦婀伴敍灞藉灟娑撳秵澧界悰灞兼崲娴ｆ洘鎼锋担婊愮礉閸忎浇顔忔妯款吇閻ㄥ嫮鐭樼拹纾嬵攽娑?
@@ -302,14 +318,19 @@ function initializeInputEnhancer(refs) {
             return;
         }
 
-        // We can reuse the handleFileDrop logic. It's designed to take file paths.
-        // The main process will read the file content from the path.
+        return queueIntake(agentId, topicId, async (remaining, isCurrent) => {
+            if (remaining === 0) return warnLimit(1);
+            await attachSharedFile(filePath, agentId, topicId, isCurrent);
+        });
+    };
+
+    async function attachSharedFile(filePath, agentId, topicId, isCurrent) {
         try {
             // We need to get the filename from the path to mimic a real File object.
             const fileName = await window.electronPath.basename(filePath);
-            if (!isActive()) return;
+            if (!isCurrent()) return;
             const results = await localElectronAPI.handleFileDrop(agentId, topicId, [{ path: filePath, name: fileName }]);
-            if (!isActive()) return;
+            if (!isCurrent()) return;
             if (results && results.length > 0 && results[0].success && results[0].attachment) {
                 const att = results[0].attachment;
                 attachedFilesRef.append({
@@ -329,7 +350,7 @@ function initializeInputEnhancer(refs) {
             console.error('[InputEnhancer] Error attaching shared file:', err);
             alert('附加分享的文件时发生意外错误。');
         }
-    };
+    }
     const sharedFileSubscription = localElectronAPI.onAddFileToInput(filePath => {
         if (!isActive()) return;
         return track(consumeSharedFile(filePath));
@@ -812,6 +833,13 @@ function initializeInputEnhancer(refs) {
             return;
         }
 
+        return queueIntake(agentId, topicId, async (remaining, isCurrent) => {
+            if (remaining === 0) return warnLimit(1);
+            await attachSuggestion(suggestion, agentId, topicId, label, isCurrent);
+        });
+    }
+
+    async function attachSuggestion(suggestion, agentId, topicId, label, isCurrent) {
         replaceMention('');
         hideNoteSuggestions();
         messageInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -825,7 +853,7 @@ function initializeInputEnhancer(refs) {
                 name: suggestion.name,
                 liveReference: suggestion.kind === 'note'
             }]);
-            if (!isActive()) return;
+            if (!isCurrent()) return;
 
             if (results && results.length > 0 && results[0].success && results[0].attachment) {
                 appendAttachment(results[0].attachment);
@@ -852,6 +880,8 @@ function initializeInputEnhancer(refs) {
                 sendMessageBtn: typeof document !== 'undefined' ? document.getElementById('sendMessageBtn') : null,
                 getCurrentAgentId: refs.getCurrentAgentId,
                 getCurrentTopicId: refs.getCurrentTopicId,
+                queueAttachmentIntake: queueIntake,
+                warnAttachmentLimit: warnLimit,
                 listenerOwner: refs.listenerOwner,
             });
         } catch (voiceInitErr) {

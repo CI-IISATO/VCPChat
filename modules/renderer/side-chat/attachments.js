@@ -4,7 +4,7 @@
  * Paste and drop: files in the clipboard or the drop become attachments, plain
  * text keeps the default behaviour.
  */
-'use strict';
+import { attachmentLimitNotice, createAttachmentIntake } from '../attachmentIntake.js';
 
 export function createSideChatAttachments({
     chatCapabilities,
@@ -21,6 +21,11 @@ export function createSideChatAttachments({
     let disposed = false;
     const chatAPI = chatCapabilities?.electronAPI;
     const uiHelper = chatCapabilities?.uiHelper;
+    const queueIntake = createAttachmentIntake(() => files.length);
+    const warnLimit = count => {
+        if (count > 0) uiHelper?.showToastNotification?.(attachmentLimitNotice(count), 'warning');
+    };
+    const isEditable = () => !disposed && !attachBtn?.disabled;
 
     function render() {
         if (disposed || !previewArea) return;
@@ -38,20 +43,23 @@ export function createSideChatAttachments({
         return true;
     }
 
-    async function pick() {
-        if (disposed || attachBtn.disabled) return;
+    const pick = () => queueIntake(pickWithinLimit);
+
+    async function pickWithinLimit(remaining) {
+        if (!isEditable()) return;
         if (typeof chatAPI?.selectFilesToSend !== 'function') {
             uiHelper?.showToastNotification?.('当前环境不支持添加附件', 'warning');
             return;
         }
         let result;
         try {
-            result = await chatAPI.selectFilesToSend(descriptor.child.itemId, descriptor.child.topicId);
+            result = await chatAPI.selectFilesToSend(descriptor.child.itemId, descriptor.child.topicId, remaining);
         } catch (error) {
             uiHelper?.showToastNotification?.(`选择文件时出错: ${error?.message || error}`, 'error');
             return;
         }
         if (disposed) return;
+        warnLimit(result?.rejectedCount);
         if (result?.success && Array.isArray(result.attachments) && result.attachments.length > 0) {
             accept(result.attachments);
         } else if (result?.error) {
@@ -80,7 +88,13 @@ export function createSideChatAttachments({
     }
 
     // 粘贴截图、拖进文件：和主输入框走同一个 handle-file-drop 通道，存到辅助话题下
-    async function addFiles(list) {
+    const addFiles = incoming => queueIntake(remaining => addFilesWithinLimit(incoming, remaining));
+
+    async function addFilesWithinLimit(incoming, remaining) {
+        if (!isEditable()) return;
+        const list = incoming.slice(0, remaining);
+        warnLimit(incoming.length - list.length);
+        if (list.length === 0) return;
         if (typeof chatAPI?.handleFileDrop !== 'function') {
             uiHelper?.showToastNotification?.('当前环境不支持添加附件', 'warning');
             return;
@@ -104,12 +118,16 @@ export function createSideChatAttachments({
     }
 
     // 剪贴板里是截图位图、拿不到 File 时（部分系统的截图工具），和主输入框一样再从系统剪贴板读一次
-    async function addClipboardImage() {
+    const addClipboardImage = () => queueIntake(addClipboardImageWithinLimit);
+
+    async function addClipboardImageWithinLimit(remaining) {
+        if (!isEditable()) return;
         if (typeof chatAPI?.readImageFromClipboard !== 'function' || typeof chatAPI?.handleFilePaste !== 'function') return;
         const { itemId, topicId } = descriptor.child;
         try {
             const image = await chatAPI.readImageFromClipboard();
-            if (disposed || !image?.data) return;
+            if (!isEditable() || !image?.data) return;
+            if (remaining === 0) return warnLimit(1);
             const result = await chatAPI.handleFilePaste(itemId, topicId, { type: 'base64', data: image.data, extension: image.extension || 'png' });
             if (disposed) return;
             accept([result?.success && result.attachment ? result.attachment : { name: '截图', error: result?.error || '截图处理失败' }]);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { createDomListenerOwner } from '../modules/renderer/domListenerOwner.js';
+import { createMainChatAttachmentOwner } from '../modules/renderer/mainChatAttachmentOwner.js';
 
 const source = fs.readFileSync(new URL('../modules/inputEnhancer.js', import.meta.url), 'utf8');
 const deferred = () => Promise.withResolvers();
@@ -19,6 +20,8 @@ function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
     const composer = window.document.getElementById('composer');
     const subscriptions = [];
     const attachments = [];
+    const notices = [];
+    const attachmentOwner = createMainChatAttachmentOwner();
     let previews = 0;
     const refs = {
         messageInput: composer.querySelector('textarea'), dropTargetElement: composer,
@@ -30,7 +33,11 @@ function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
             },
             handleFileDrop, searchNotes: async () => [],
         },
-        attachedFiles: { append: attachment => attachments.push(attachment) },
+        attachedFiles: { ...attachmentOwner.ref, append: attachment => {
+            attachments.push(attachment);
+            attachmentOwner.ref.append(attachment);
+        } },
+        showToastNotification: message => notices.push(message),
         updateAttachmentPreview: () => { previews += 1; },
         getCurrentAgentId: () => 'agent', getCurrentTopicId: () => 'topic', listenerOwner,
     };
@@ -41,7 +48,7 @@ function fixture(t, { listenerOwner, handleFileDrop = async () => [] } = {}) {
     });
     const initialize = () => window.inputEnhancer.initializeInputEnhancer(refs);
     initialize();
-    return { window, composer, subscriptions, attachments, initialize, get previews() { return previews; } };
+    return { window, composer, subscriptions, attachments, initialize, notices, get previews() { return previews; } };
 }
 
 test('renderer owner removes real DOM listeners and preload subscriptions', async t => {
@@ -93,4 +100,23 @@ test('reinitialization retires the old preload subscription and delivers only to
     await f.window.inputEnhancer.dispose();
     owner.dispose();
     assert.deepEqual(f.subscriptions.map(subscription => subscription.disposals), [1, 1]);
+});
+test('parallel composer drops limit storage to the first 20 files', async t => {
+    const calls = [];
+    const f = fixture(t, { handleFileDrop: async (_agent, _topic, files) => {
+        calls.push(...files.map(file => file.name));
+        return files.map(file => ({ success: true, attachment: { name: file.name, internalPath: `/tmp/${file.name}` } }));
+    } });
+    for (const [start, end] of [[0, 17], [17, 23]]) {
+        const event = new f.window.Event('drop', { bubbles: true, cancelable: true });
+        const files = Array.from({ length: end - start }, (_, i) =>
+            new f.window.File(['test'], `item-${i + start}.txt`, { type: 'text/plain' }));
+        Object.defineProperty(event, 'dataTransfer', { value: { files } });
+        f.composer.dispatchEvent(event);
+    }
+    const deadline = Date.now() + 2000;
+    while (f.previews < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(calls, Array.from({ length: 20 }, (_, i) => `item-${i}.txt`));
+    assert.equal(f.attachments.length, 20);
+    assert.deepEqual(f.notices, ['单条消息最多 20 个附件，本次有 3 个未添加。']);
 });

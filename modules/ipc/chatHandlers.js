@@ -904,7 +904,7 @@ function initialize(mainWindow, context) {
         }
     });
 
-    ipcMain.handle('select-files-to-send', async (event, agentId, topicId) => {
+    ipcMain.handle('select-files-to-send', async (event, agentId, topicId, remainingSlots) => {
         if (!agentId || !topicId) {
             console.error('[Main - select-files-to-send] Agent ID or Topic ID not provided.');
             return { error: "Agent ID and Topic ID are required to select files." };
@@ -939,8 +939,13 @@ function initialize(mainWindow, context) {
         }
 
         if (!result.canceled && result.filePaths.length > 0) {
+            const maxAttachments = 20;
+            const limit = Number.isInteger(remainingSlots) ? Math.min(maxAttachments, Math.max(0, remainingSlots)) : maxAttachments;
+            const acceptedPaths = result.filePaths.slice(0, limit);
+            const rejectedCount = result.filePaths.length - acceptedPaths.length;
+            if (acceptedPaths.length === 0) return { success: true, attachments: [], rejectedCount };
             try {
-                await rememberAttachmentDirectory(settingsManager, result.filePaths[0]);
+                await rememberAttachmentDirectory(settingsManager, acceptedPaths[0]);
             } catch (error) {
                 // Directory memory is a convenience feature; selected attachments
                 // must remain usable when settings persistence is temporarily unavailable.
@@ -948,7 +953,7 @@ function initialize(mainWindow, context) {
             }
 
             const storedFilesInfo = [];
-            for (const filePath of result.filePaths) {
+            for (const filePath of acceptedPaths) {
                 try {
                     const originalName = path.basename(filePath);
                     const ext = path.extname(filePath).toLowerCase();
@@ -973,7 +978,7 @@ function initialize(mainWindow, context) {
                     storedFilesInfo.push({ name: path.basename(filePath), error: error.message });
                 }
             }
-            return { success: true, attachments: storedFilesInfo };
+            return { success: true, attachments: storedFilesInfo, rejectedCount };
         }
         return { success: false, attachments: [] };
     });

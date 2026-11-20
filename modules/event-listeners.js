@@ -465,28 +465,35 @@ export function setupEventListeners(deps) {
             uiHelperFunctions.showToastNotification("请先选择一个项目和话题以上传附件。", 'error');
             return;
         }
-        const result = await chatAPI.selectFilesToSend(currentSelectedItem.id, currentTopicId);
+        await refs.attachedFiles.queueIntake(async remaining => {
+            const isCurrent = () => refs.currentSelectedItem.get()?.id === currentSelectedItem.id
+                && refs.currentTopicId.get() === currentTopicId;
+            if (!isCurrent()) return;
+            const result = await chatAPI.selectFilesToSend(currentSelectedItem.id, currentTopicId, remaining);
+            if (!isCurrent()) return;
+            if (result?.rejectedCount > 0) {
+                uiHelperFunctions.showToastNotification(refs.attachedFiles.attachmentLimitNotice(result.rejectedCount), 'warning');
+            }
 
-        if (result && result.success && result.attachments && result.attachments.length > 0) {
-            result.attachments.forEach(att => {
-                if (att.error) {
-                    console.error(`Error processing selected file ${att.name || 'unknown'}: ${att.error}`);
-                    uiHelperFunctions.showToastNotification(`处理文件 ${att.name || '未知文件'} 失败: ${att.error}`, 'error');
-                } else {
-                    refs.attachedFiles.append({
-                        file: { name: att.name, type: att.type, size: att.size },
-                        localPath: att.internalPath,
-                        originalName: att.name,
-                        _fileManagerData: att
-                    });
+            if (result?.success && Array.isArray(result.attachments)) {
+                for (const att of result.attachments) {
+                    if (att.error) {
+                        console.error(`Error processing selected file ${att.name || 'unknown'}: ${att.error}`);
+                        uiHelperFunctions.showToastNotification(`处理文件 ${att.name || '未知文件'} 失败: ${att.error}`, 'error');
+                    } else {
+                        refs.attachedFiles.append({
+                            file: { name: att.name, type: att.type, size: att.size },
+                            localPath: att.internalPath,
+                            originalName: att.name,
+                            _fileManagerData: att
+                        });
+                    }
                 }
-            });
-            updateAttachmentPreview();
-        } else if (result && !result.success && result.attachments && result.attachments.length === 0) {
-            console.log('[Renderer] File selection cancelled or no files selected.');
-        } else if (result && result.error) {
-            uiHelperFunctions.showToastNotification(`选择文件时出错: ${result.error}`, 'error');
-        }
+                if (result.attachments.length > 0) updateAttachmentPreview();
+            } else if (result?.error) {
+                uiHelperFunctions.showToastNotification(`选择文件时出错: ${result.error}`, 'error');
+            }
+        }).catch(error => uiHelperFunctions.showToastNotification(`选择文件时出错: ${error.message}`, 'error'));
     });
 
     // The modal is template-backed.  Do not rely solely on its one-time

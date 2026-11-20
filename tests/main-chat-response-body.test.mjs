@@ -20,10 +20,11 @@ async function waitFor(predicate) {
 
 // Execute the real module and public IPC route, with isolated dependencies.
 // No source rewriting or test-only access to its private stream function.
-function route(fetchResponse, { settings = null, abortSignal = AbortSignal, admission = null, token = null } = {}) {
+function route(fetchResponse, { settings = null, abortSignal = AbortSignal, admission = null, token = null, picker = null } = {}) {
     const handlers = new Map(), module = { exports: {} }, sent = [], warnings = [];
     const dependencies = new Map([
-        ['electron', { ipcMain: { handle: (name, fn) => handlers.set(name, fn), on() {} }, dialog: {}, BrowserWindow: {} }],
+        ['electron', { ipcMain: { handle: (name, fn) => handlers.set(name, fn), on() {} },
+            dialog: { showOpenDialog: picker?.open }, BrowserWindow: { fromWebContents: () => null } }],
         ['fs-extra', { pathExists: async () => settings !== null, readJson: async () => settings }],
         ['path', require('node:path')], ['crypto', require('node:crypto')],
         ['../services/senderTaskRegistry', require('../modules/services/senderTaskRegistry.js')],
@@ -33,8 +34,9 @@ function route(fetchResponse, { settings = null, abortSignal = AbortSignal, admi
         ['../modelTrajectory', require('../modules/modelTrajectory.js')],
         // 真实的心情模块：没有配置时 observe 是空操作
         ['../agentMood', require('../modules/agentMood.js')],
-        ['../services/attachmentDialogState', {}], ['../../Groupmodules/topicTitleManager', {}],
-        ['../services/historyMutationQueue', {}], ['./workspaceHandlers', {}], ['./sideChatHandlers', {}],
+        ['../services/attachmentDialogState', { resolveRememberedAttachmentDirectory: async () => null, rememberAttachmentDirectory: async () => {} }],
+        ['../fileManager', { storeFile: picker?.store }], ['../../Groupmodules/topicTitleManager', {}],
+        ['../services/historyMutationQueue', {}], ['./workspaceHandlers', { resolveWorkspaceFile: () => null }], ['./sideChatHandlers', {}],
         // 桌宠没打开时这些钩子全是空操作，用真实模块。
         ['../hostHooks', require('../modules/hostHooks.js')],
     ]);
@@ -43,16 +45,37 @@ function route(fetchResponse, { settings = null, abortSignal = AbortSignal, admi
         console: { log() {}, warn: (...args) => warnings.push(args.join(' ')), error() {} },
         TextDecoder, URL, fetch: fetchResponse, AbortSignal: abortSignal,
     })(load, module, module.exports);
-    module.exports.initialize(null, { USER_DATA_DIR: 'unused-isolated-fixture', APP_DATA_ROOT_IN_PROJECT: 'unused-isolated-fixture', historyMutationQueue: {}, topicAdmission: admission });
+    module.exports.initialize(null, { USER_DATA_DIR: 'unused-isolated-fixture', APP_DATA_ROOT_IN_PROJECT: 'unused-isolated-fixture', historyMutationQueue: {}, topicAdmission: admission, getSelectionListenerStatus: () => false });
     const sender = Object.assign(new EventEmitter(), { id: 501, isDestroyed: () => false, send: (channel, event) => sent.push({ channel, event }) });
     const context = { agentId: 'fixture-agent', topicId: 'fixture-topic', admissionToken: token };
     return { sent, warnings, sender, context, tasks: () => module.exports.getVcpStreamTaskSnapshot(),
         start: (url = 'http://controlled.invalid/v1/chat/completions', messages = []) => handlers.get('send-to-vcp')({ sender }, url, '', messages, { stream: true }, 'same-message', false, context),
         interrupt: (caller = sender) => handlers.get('interrupt-vcp-request')({ sender: caller }, { messageId: 'same-message' }),
         compression: (needed, caller = sender) => handlers.get('tool-loop:compression-ready')({ sender: caller }, 'same-message', needed),
+        pick: remaining => handlers.get('select-files-to-send')({ sender }, 'fixture-agent', 'fixture-topic', remaining),
         close: () => sender.emit('destroyed'),
     };
 }
+
+test('native picker does not store paths beyond the remaining attachment slots', async () => {
+    const stored = [];
+    const f = route(null, { picker: {
+        open: async () => ({ canceled: false, filePaths: ['a.png', 'b.png', 'c.png'] }),
+        store: async file => { stored.push(file); return { name: file }; },
+    } });
+    try {
+        const result = await f.pick(2);
+        assert.equal(result.success, true);
+        assert.equal(result.rejectedCount, 1);
+        assert.deepEqual(stored, ['a.png', 'b.png']);
+        const full = await f.pick(0);
+        assert.equal(full.attachments.length, 0);
+        assert.equal(full.rejectedCount, 3);
+        assert.deepEqual(stored, ['a.png', 'b.png']);
+    } finally {
+        f.close();
+    }
+});
 
 // hung：服务卡住不回中止请求，超时后照样走本地收尾，停止按钮不跟着卡
 for (const failure of ['rejected', 'transport-error', 'missing-settings', 'hung']) {

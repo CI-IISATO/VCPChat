@@ -176,6 +176,8 @@ class ChatVoiceComposer {
 				: null);
 		this.getCurrentAgentId = refs.getCurrentAgentId || (() => "default");
 		this.getCurrentTopicId = refs.getCurrentTopicId || (() => "default");
+		this.queueAttachmentIntake = refs.queueAttachmentIntake;
+		this.warnAttachmentLimit = refs.warnAttachmentLimit;
 		this.listenerOwner = refs.listenerOwner || null;
 
 		this.lastAgentId = this.getCurrentAgentId();
@@ -1039,6 +1041,21 @@ class ChatVoiceComposer {
 
 	async attachWavAudioFile(wavBlob) {
 		if (!wavBlob) return false;
+		const agentId = this.getCurrentAgentId?.() ?? "default";
+		const topicId = this.getCurrentTopicId?.() ?? "default";
+		const attach = (remaining, isCurrent = () => true) => {
+			if (remaining === 0) {
+				this.warnAttachmentLimit?.(1);
+				return false;
+			}
+			return this.storeWavAttachment(wavBlob, agentId, topicId, isCurrent);
+		};
+		return this.queueAttachmentIntake
+			? Boolean(await this.queueAttachmentIntake(agentId, topicId, attach))
+			: attach(Infinity);
+	}
+
+	async storeWavAttachment(wavBlob, agentId, topicId, isCurrent) {
 		const now = new Date();
 		const pad = (n) => String(n).padStart(2, "0");
 		const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -1047,14 +1064,7 @@ class ChatVoiceComposer {
 		try {
 			const arrayBuffer = await wavBlob.arrayBuffer();
 			const wavBytes = new Uint8Array(arrayBuffer);
-			const agentId =
-				typeof this.getCurrentAgentId === "function"
-					? this.getCurrentAgentId()
-					: "default";
-			const topicId =
-				typeof this.getCurrentTopicId === "function"
-					? this.getCurrentTopicId()
-					: "default";
+			if (!isCurrent()) return false;
 
 			const dropResults = await this.callIpc(
 				'handleFileDrop',
@@ -1072,6 +1082,7 @@ class ChatVoiceComposer {
 			);
 
 			if (
+				isCurrent() &&
 				Array.isArray(dropResults) &&
 				dropResults[0]?.success &&
 				dropResults[0]?.attachment

@@ -1,3 +1,5 @@
+import { attachmentLimitNotice, createAttachmentIntake } from './attachmentIntake.js';
+
 /** Owns the main window's pending attachment state and preview projection. */
 export function createMainChatAttachmentOwner({ renderPreview = null } = {}) {
     let files = Object.freeze([]);
@@ -8,6 +10,8 @@ export function createMainChatAttachmentOwner({ renderPreview = null } = {}) {
     };
     const ref = Object.freeze({
         get: () => files,
+        queueIntake: createAttachmentIntake(() => files.length),
+        attachmentLimitNotice,
         set(value) {
             assertActive();
             files = Object.freeze(Array.isArray(value) ? [...value] : []);
