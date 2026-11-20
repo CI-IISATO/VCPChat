@@ -1434,6 +1434,18 @@ window.GroupRenderer = (() => {
             return;
         }
 
+        if (currentGlobalSettings.currentAttachmentBudgetMiB > 0 && attachedFiles.length) {
+            const { currentAttachmentBudgetWarning } = await import('../modules/chat/currentAttachmentBudget.mjs');
+            if (currentSelectedItemRef.get()?.id !== currentSelected.id || currentTopicIdRef.get() !== currentTopic
+                || mainRendererElements.messageInput.value !== rawDraft
+                || mainRendererFunctions.getAttachedFiles() !== attachedFiles) return;
+            const warning = currentAttachmentBudgetWarning(attachedFiles, currentGlobalSettings.currentAttachmentBudgetMiB);
+            if (warning) {
+                uiHelper?.showToastNotification?.(warning, 'warning');
+                return { success: false, error: warning };
+            }
+        }
+
         let combinedTextContent = content;
         const uiAttachments = []; // For UI rendering and passing full metadata
 

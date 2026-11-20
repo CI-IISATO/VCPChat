@@ -64,7 +64,8 @@ function legacyCollect({ doc, currentSettings, settingsManager, getAppearance, n
         userAvatarBorderColor: getElementById('userAvatarBorderColor')?.value || '#3d5a80',
         userNameTextColor: getElementById('userNameTextColor')?.value || '#ffffff',
         userUseThemeColorsInChat: getElementById('userUseThemeColorsInChat')?.checked || false,
-        continueWritingPrompt: getElementById('continueWritingPrompt').value.trim() || '请继续',
+        continueWritingPrompt: getElementById('continueWritingPrompt').value.trim()
+            || '[系统提示:] 请继续。若当前已无值得继续推进的任务或话题，请输出 [[Flowlock::Stop]] 关闭心流锁心跳。',
         flowlockContinueDelay: parseInt(getElementById('flowlockContinueDelay').value, 10) || 5,
         enableMiddleClickQuickAction: getElementById('enableMiddleClickQuickAction').checked,
         middleClickQuickAction: getElementById('middleClickQuickAction').value,
@@ -318,7 +319,7 @@ function historicalPayload(payload) {
     delete profile.toolExpansion;
     delete profile.toolBubbleMotion;
     const historical = {...payload, appearanceProfile: profile};
-    for (const key of ['enableContextCompaction', 'contextCompactionModel', 'contextCompactionPrompt', 'contextCompactionSendPrompt', 'contextCompactionMainPrompt']) {
+    for (const key of ['enableContextCompaction', 'contextCompactionModel', 'contextCompactionPrompt', 'contextCompactionSendPrompt', 'contextCompactionMainPrompt', 'currentAttachmentBudgetMiB']) {
         delete historical[key];
     }
     return historical;
@@ -356,6 +357,23 @@ test('金测：未灌值的新渲染表单与旧收集器等价（schema 默认�
     const legacy = legacyCollect({ ...scope });
     const collected = collectSettings(schemaSurfaceSections(), { form, ...scope });
     assert.deepStrictEqual(historicalPayload(collected), legacy);
+});
+
+test('本轮附件上限默认关闭，并按数字保存用户设置', () => {
+    const scope = makeScope(baseCurrentSettings());
+    const collect = () => collectSettings(schemaSurfaceSections(), { form, ...scope });
+    const field = form.querySelector('#currentAttachmentBudgetMiB');
+    const original = field.value;
+    try {
+        field.value = '';
+        assert.equal(collect().currentAttachmentBudgetMiB ?? 0, 0);
+        field.value = '16';
+        assert.equal(collect().currentAttachmentBudgetMiB, 16);
+        field.value = '0';
+        assert.equal(collect().currentAttachmentBudgetMiB, 0);
+    } finally {
+        field.value = original;
+    }
 });
 
 test('值语义特例：parseInt||fallback 的 0 兜底、钳位顺序、白名单', () => {

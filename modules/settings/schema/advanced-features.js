@@ -70,6 +70,13 @@ export const advancedFeaturesSection = section('advanced-features', '高级功�
             }),
         ],
     }),
+    number('currentAttachmentBudgetMiB', {
+        label: '本轮附件合计上限（MiB）',
+        hint: '单聊和群聊发送前检查本轮附件原始大小。超限保留草稿；0 表示不检查。不影响历史附件或上下文压缩。',
+        min: 0,
+        defaultValue: 0,
+        save: { parse: 'int', fallback: 0 },
+    }),
     switchField('enableDistributedServer', {
         label: '启用VCP分布式服务器',
         rowStyle: 33,

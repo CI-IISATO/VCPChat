@@ -5,6 +5,7 @@ import {
     updateFirstTextPart,
 } from './chat/singleChatRequestOrchestrator.js';
 import { publishConversationSelection } from './ui-system/sources/conversation-current.js';
+import { currentAttachmentBudgetWarning } from './chat/currentAttachmentBudget.mjs';
 import { createContextCompactionService, shouldCompactContext, estimateContextTokens } from './chat/contextCompactionService.js';
 import { effectiveContextHistory, isContextCheckpoint, summarizeCompactionInput } from './chat/contextCompactionState.js';
 
@@ -1925,27 +1926,20 @@ export const chatManager = (() => {
                 if (request.propagateError) throw error;
                 return;
             }
-            if (groupRenderer && typeof groupRenderer.handleSendGroupMessage === 'function') {
-                groupRenderer.handleSendGroupMessage(
-                    currentSelectedItem.id,
-                    currentTopicId,
-                    { text: content, attachments: attachedFiles.map(af => ({ type: af.file.type, src: af.localPath, name: af.originalName, size: af.file.size })) },
-                    globalSettings.userName || '用户'
-                );
-            } else {
-                uiHelper.showToastNotification("群聊功能模块未加载，无法发送消息。", 'error');
+            if (typeof groupRenderer?.handleSendGroupMessage === 'function') {
+                return groupRenderer.handleSendGroupMessage();
             }
-            if (!request) {
-                messageInput.value = '';
-                attachedFilesRef.set([]);
-                if(mainRendererFunctions.updateAttachmentPreview) mainRendererFunctions.updateAttachmentPreview();
-                uiHelper.autoResizeTextarea(messageInput);
-            }
-            // messageInput.focus();
+            uiHelper.showToastNotification('群聊功能模块未加载，无法发送消息。', 'error');
             return;
         }
 
         // --- Standard Agent Message Sending ---
+        const attachmentWarning = currentAttachmentBudgetWarning(attachedFiles, globalSettings.currentAttachmentBudgetMiB);
+        if (attachmentWarning) {
+            if (request?.propagateError) throw new Error(attachmentWarning);
+            uiHelper.showToastNotification(attachmentWarning, 'warning');
+            return;
+        }
         const sendSignature = `${sendContext.agentId}:${sendContext.topicId}`;
         if (isContextCompacting({ itemId: sendContext.agentId, itemType: sendContext.itemType, topicId: sendContext.topicId })) {
             uiHelper.showToastNotification('上下文正在压缩，请等待完成后再发送', 'warning');

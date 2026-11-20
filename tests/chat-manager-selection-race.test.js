@@ -7,6 +7,7 @@ let compactionDependencies;
 test.before(async () => {
     compactionDependencies = {
         ...await import('../modules/chat/contextCompactionService.js'),
+        ...await import('../modules/chat/currentAttachmentBudget.mjs'),
         ...await import('../modules/chat/contextCompactionState.js'),
         ...await import('../modules/chat/chatHistoryMutationAuthority.js'),
     };
@@ -45,6 +46,7 @@ function createFixture(options = {}) {
     Object.assign(window, compactionDependencies);
     if (options.compactionService) window.createContextCompactionService = () => options.compactionService;
     const chatManagerSource = fs.readFileSync('modules/chatManager.js', 'utf8')
+        .replace(/^import \{ currentAttachmentBudgetWarning \} from '\.\/chat\/currentAttachmentBudget\.mjs';\r?$/m, '')
         .replace(/import\s*\{[^}]*\}\s*from\s*['"]\.\/chat\/contextCompaction(?:Service|State)\.js['"];\s*/g, '')
         .replace(/import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/chat\/singleChatRequestOrchestrator\.js['"];\s*/, '')
         .replace(/import\s*\{\s*publishConversationSelection\s*\}\s*from\s*['"][^'"]+['"];\s*/, '')
@@ -1281,6 +1283,28 @@ test('admission send consumes accepted draft without writing history or starting
         assert.equal(fixture.state().attachedFiles.length, 0);
         assert.equal(fixture.historySaveCount(), before);
         assert.equal(fixture.sentRequests.length, 0);
+        assert.deepEqual(fixture.state().history.map(message => message.id), ['a-message']);
+    } finally { fixture.dom.window.close(); }
+});
+
+test('the current attachment total is checked before admission without clearing the draft', async () => {
+    let admissions = 0;
+    const fixture = createFixture({
+        settings: { currentAttachmentBudgetMiB: 1 },
+        topicAdmissionSubmit: async () => { admissions++; return { success: true }; },
+    });
+    try {
+        await selectAdmissionFixture(fixture);
+        const input = fixture.window.document.getElementById('messageInput');
+        input.value = 'compare both files';
+        for (const n of [1, 2]) fixture.attachmentRef.append({
+            file: { type: 'image/png', size: 768 * 1024 },
+            localPath: `file:///fixture/${n}.png`,
+        });
+        await fixture.chatManager.handleSendMessage();
+        assert.equal(admissions, 0);
+        assert.equal(input.value, 'compare both files');
+        assert.equal(fixture.state().attachedFiles.length, 2);
         assert.deepEqual(fixture.state().history.map(message => message.id), ['a-message']);
     } finally { fixture.dom.window.close(); }
 });

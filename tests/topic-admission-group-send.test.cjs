@@ -9,22 +9,29 @@ const source = fs.readFileSync(path.join(__dirname, '../Groupmodules/grouprender
 const body = source.slice(source.indexOf('async function handleSendGroupMessage()'),
     source.indexOf('async function loadGroupChatHistory('));
 
-function fixture() {
+function fixture({ settings = {}, sizes } = {}) {
     let selected = { type: 'group', id: 'g1' };
     let topic = 't1';
     let files = [{ file: { type: 'text/plain', size: 12 }, originalName: 'a.txt',
         localPath: 'file:///a.txt', _fileManagerData: { internalPath: 'C:\\a.txt', extractedText: 'FILE TEXT' } }];
+    if (sizes) files = sizes.map((size, i) => ({
+        file: { type: 'image/png', size }, originalName: `${i}.png`, localPath: `file:///${i}.png`,
+    }));
     const input = { value: ' hello ' };
     let accept;
     let submitted;
     let clears = 0;
     const notices = [];
-    const send = vm.runInNewContext(`(${body.trim()})`, {
+    const script = new vm.Script(`(${body.trim()})`, {
+        filename: path.join(__dirname, '../Groupmodules/grouprenderer.js'),
+        importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+    });
+    const send = script.runInNewContext({
         console, Date, Math,
         mainRendererElements: { messageInput: input },
         currentSelectedItemRef: { get: () => selected },
         currentTopicIdRef: { get: () => topic },
-        globalSettings: { get: () => ({ vcpServerUrl: 'http://fixture.invalid', userName: 'Ryan' }) },
+        globalSettings: { get: () => ({ vcpServerUrl: 'http://fixture.invalid', userName: 'Ryan', ...settings }) },
         mainRendererFunctions: {
             getAttachedFiles: () => files,
             clearAttachedFiles: () => { clears++; files = []; },
@@ -60,6 +67,25 @@ test('actual group send freezes human raw history and expanded attachment reques
     assert.equal((await pending).success, true);
     assert.equal(f.input.value, '');
     assert.equal(f.clears, 1);
+});
+
+test('group attachment total over limit keeps the whole draft and skips admission', async () => {
+    const f = fixture({ settings: { currentAttachmentBudgetMiB: 1 }, sizes: [768 * 1024, 768 * 1024] });
+    assert.equal((await f.send()).success, false);
+    assert.equal(f.submitted, undefined);
+    assert.equal(f.clears, 0);
+    assert.equal(f.input.value, ' hello ');
+    assert.match(f.notices[0][0], /1\.5 MiB.*超过 1 MiB/);
+});
+
+test('equal to the total attachment limit is admitted without rewriting attachments', async () => {
+    const f = fixture({ settings: { currentAttachmentBudgetMiB: 1 }, sizes: [512 * 1024, 512 * 1024] });
+    const pending = f.send();
+    for (let i = 0; i < 100 && !f.submitted; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(f.submitted, 'the message was passed to admission');
+    assert.equal(f.submitted.message.attachments.length, 2);
+    f.accept({ success: true });
+    assert.equal((await pending).success, true);
 });
 
 test('rejected admission retains group text and attachments', async () => {
